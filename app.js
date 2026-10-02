@@ -1,12 +1,14 @@
 let pendulum;
 let g = 0.005;
-let damp = -0.001;
+let damp = -0.005;
 let f = 0;
-let eval = 0
+let evalu = 0
 
 function setup(){
     createCanvas(window.innerWidth,window.innerHeight)
-    pendulum = new Pendulum(width/2,height/1.75,200,0)
+    pendulum = new Pendulum(width/2,height/1.75,200,PI + HALF_PI)
+    let net = new Network()
+    net.compute(pendulum.pos.x,pendulum.vel,pendulum.ang,pendulum.angVel)
 }
 
 function draw(){
@@ -14,17 +16,17 @@ function draw(){
     strokeWeight(1)
     stroke(0,100,150)
     line(0,height/1.75,width,height/1.75)
-    eval = evaluate()
+    evalu = evaluate()
     fill(255)
     textSize(22)
     textFont('Courier')
-    text(eval.toFixed(3),width - 200,100)
+    text(evalu.toFixed(3),width - 200,100)
     pendulum.show()
     if(keyIsDown(RIGHT_ARROW)){
-        f = 1
+        f = 0.5
     }
     else if( keyIsDown(LEFT_ARROW)){
-        f = -1
+        f = -0.5
     }
     else{
         f = 0;
@@ -41,26 +43,25 @@ class Pendulum{
         this.angVel = 0
         this.angAcc = 0
         this.l = l
-        this.m = 500;
+        this.m = 200;
     }
     show(){
         let x2 = this.pos.x + this.l * cos(this.ang)
         let y2 = this.pos.y + this.l * sin(this.ang)
         strokeWeight(4)
-        stroke(map(eval,-10,10,255,0),map(eval,-10,10,0,255),20)
+        stroke(map(evalu,-10,10,255,0),map(evalu,-10,10,0,255),20)
         line(this.pos.x,this.pos.y,x2,y2)
         noStroke()
-        fill(map(eval,-10,10,255,0),map(eval,-10,10,0,255),20)
+        fill(map(evalu,-10,10,255,0),map(evalu,-10,10,0,255),20)
         circle(x2,y2,this.l/4)
         strokeWeight(2)
         stroke(map(abs(this.vel),0,25,100,250))
         noFill()
         circle(this.pos.x,this.pos.y,this.l/7)
         circle(this.pos.x,this.pos.y,5)
-        
     }
     update(){
-        this.acc = f + g*abs(sin(this.ang))*(abs(cos(this.ang))/cos(this.ang))
+        this.acc = f + (this.l/10)*this.angVel*this.angVel*(abs(cos(this.ang))/cos(this.ang))*abs(cos(this.ang))
         this.vel += this.acc
         this.pos.x += this.vel
         this.angAcc = g*cos(this.ang) + (f/this.m)*sin(this.ang)
