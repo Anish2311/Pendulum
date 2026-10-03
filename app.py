@@ -93,48 +93,113 @@ def evaluate():
 
 
 #----------------------------------------
-#         NUERAL NETWOR PART
+#         NEURAL NETWORK PART
 #----------------------------------------
 
+class Network():
+    def __init__(self,n,larr,o):
+
+        self.weights = []
+        self.biases = []
+
+        self.errorFunctionDeriv = 0
+        self.outputFunctionDeriv = 0
+        self.activationFunctionDeriv = []
+        self.opForLayers = []
+
+        self.totalLayers = 1+len(larr)
+
+        a = n
+        for i in range(self.totalLayers):
+            b = o
+            if i < len(larr):
+                b = larr[i]
+            layerWeights = np.abs(np.random.normal(0,0.1,a*b))
+            layerWeights = np.reshape(layerWeights,(a,b))
+            self.weights.append(layerWeights)
+            self.biases.append(np.zeros(b))
+            a = b
+
+    def activationFunction(self,a):
+        sgnm = 1 / (1 + np.exp(-a))
+        app = sgnm*(1-sgnm)
+        app = app.T
+        self.activationFunctionDeriv.append(app)
+        return sgnm
+
+    def outputFunction(self,a):
+        m = np.exp(a)
+        self.outputFunctionDeriv = m*(m.sum() - m.ndim)/(m*m).sum()
+        self.outputFunctionDeriv = self.outputFunctionDeriv.T
+        return m/m.sum()
+
+    def traverse(self,arr):
+        self.activationFunctionDeriv = []
+        self.opForLayers = []
+        ip = np.array([arr])
+
+        for i in range(self.totalLayers):
+            self.opForLayers.append(ip)
+            op = ip @ self.weights[i]
+            op = op + self.biases[i]
+            if i < self.totalLayers-1:
+                op = self.activationFunction(op)
+            else:
+                op = self.outputFunction(op)
+            ip = op
+
+        return op
+
+    def errorFunction(self,op,data):
+        sq = op - data
+        l = sq.ndim
+        self.errorFunctionDeriv = (-2/l)*np.abs(sq)
+        self.errorFunctionDeriv = self.errorFunctionDeriv.T
+        sq = sq * sq
+        msq = sq.sum()/l
+        return msq
 
 
-inputLayer = np.array([[100,200,300,400]])
+    def backPropogate(self):
 
-layerOneWeights = np.abs(np.random.normal(0,0.1,64))
-layerOneWeights = np.reshape(layerOneWeights,(4,16))
-layerOneBias = np.zeros(16)
+        gradient = []
 
-layerTwoWeights = np.abs(np.random.normal(0,0.1,16*16))
-layerTwoWeights = np.reshape(layerTwoWeights,(16,16))
-layerTwoBias = np.zeros(16)
+        initDeriv = self.errorFunctionDeriv * self.outputFunctionDeriv
 
-layerThreeWeights = np.abs(np.random.normal(0,0.1,16*3))
-layerThreeWeights = np.reshape(layerThreeWeights,(16,3))
-layerThreeBias = np.zeros(3)
+        for i in range(self.totalLayers-1,-1,-1):
+            if i != self.totalLayers-1:
+                initDeriv *= self.activationFunctionDeriv[i]
+            appDeriv = initDeriv @ self.opForLayers[i]
+            appDeriv = appDeriv.T
+            gradient.append(appDeriv)
+            initDeriv = self.weights[i] @ initDeriv
 
-def activationFunction(a):
-    return np.sign(a)
+        gradient = gradient[::-1]
+        return gradient
 
-def outputFunction(a):
-    return a/a.sum()
-
-def traverse():
-    oLayer1 = inputLayer @ layerOneWeights
-    oLayer1 = oLayer1 + layerOneBias
-    oLayer1 = activationFunction(oLayer1)
-
-    olayer2 = oLayer1 @ layerTwoWeights
-    olayer2 = olayer2 + layerTwoBias
-    olayer2 = activationFunction(olayer2)
+    
 
 
-    outputLayer = olayer2 @ layerThreeWeights
-    outputLayer = outputLayer + layerThreeBias
-    outputLayer = outputFunction(outputLayer)
 
-    return outputLayer
 
-output = traverse()
 
-if __name__ == '__main__':
-  run()
+agent = Network(4,[16,16],3)
+# critic = Network(4,[16,16],1)
+
+epochs = 100
+learningRate = 0.1
+
+for epoch in range(epochs):
+    output = agent.traverse([100,100,100,100])
+    error = agent.errorFunction(output,[[0,1,0]])
+    gradient = agent.backPropogate()
+
+    for i in range(len(gradient)):
+        agent.weights[i] -= gradient[i]*learningRate
+
+output = agent.traverse([100,100,100,100])
+
+print(output)
+
+# if __name__ == '__main__':
+#   run()
