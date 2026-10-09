@@ -19,16 +19,16 @@ class Pendulum:
         self.angVel = 0
         self.angAcc = 0
         self.l = l
-        self.m = 200
+        self.m = 100
     
     def show(self):
         x2 = self.pos[0] + self.l * cos(self.ang)
         y2 = self.pos[1] + self.l * sin(self.ang)
         strokeWeight(4)
-        stroke(255 - ((evalu+50)/50)*255,((evalu+50)/50)*255,20)
+        stroke(255 - ((evalu+1.1)/1.1)*255,((evalu+1.1)/1.1)*255,20)
         line(self.pos[0],self.pos[1],x2,y2)
         noStroke()
-        fill(255 - ((evalu+50)/50)*255,((evalu+50)/50)*255,20)
+        fill(255 - ((evalu+1.1)/1.1)*255,((evalu+1.1)/1.1)*255,20)
         circle(x2,y2,self.l/4)
         strokeWeight(2)
         stroke(100 + (self.vel/25)*150)
@@ -77,14 +77,12 @@ def draw():
     text(str(evalu),1000,100)
     pendulum.show()
 
-    if fcounter == 300 or pendulum.pos[0] < 0 or pendulum.pos[0] > width:
-        fir = False
-        if frame_count <= 301:
-            fir = True
-        fit(fir)
+    f = 0
+    if fcounter == 60 or pendulum.pos[0] < 0 or pendulum.pos[0] > width:
+        fit()
         reset()
         fcounter = 0
-    else:
+    elif frame_count%5 == 0:
         goOn()
         fcounter += 1
 
@@ -105,7 +103,7 @@ def reset():
 
     cache.clear()
 
-    pendulum.ang = HALF_PI
+    pendulum.ang = PI
     pendulum.angVel = 0
     pendulum.angAcc = 0
 
@@ -130,19 +128,24 @@ def evaluate():
 
     w_theta = 1.0       # Upright angle penalty
     w_theta_dot = 0.1   # Angular velocity penalty (prevents spinning)
-    w_x = 1           # Position penalty (keeps cart centered)
+    w_x = 0.5          # Position penalty (keeps cart centered)
 
-    ang = pendulum.ang
-    # if ang < 0:
-    #     ang += 2*PI
+    ang = (pendulum.ang)%(2*PI)
+    if ang < 0:
+        ang += 2*PI
 
-    theta_err = (1 + np.sin(ang))/2
+    theta_err = 3*HALF_PI - ang
+    if theta_err > PI:
+        theta_err = 2*PI - theta_err
 
-    reward = -(w_theta * (theta_err ** 2) + 
-            w_theta_dot * ((pendulum.angVel/2) ** 2) + 
-            w_x * (((pendulum.pos[0]-(width/2))/(width/2)) ** 2))
+    offset_err = abs(pendulum.pos[0] - width/2)/(width/2)
+
+    off_t = -1
+    off_w = -0.1
+
+    reward = off_t * theta_err/PI + off_w * offset_err
     
-    return reward*100
+    return reward
 
 
 #----------------------------------------
@@ -238,7 +241,7 @@ class Network():
 actor = Network(4,[32,32],3,1)
 critic = Network(4,[32,32],1,0)
 
-discount_factor = 0.999
+discount_factor = 0.98
 learning_rate = 0.01
 cache = []
 episodes = 0
@@ -253,13 +256,13 @@ def goOn():
     global cache
     global episodes
 
-    state = [(abs(pendulum.ang)%(2*PI))/(2*PI),pendulum.angVel/2,pendulum.pos[0]/width,pendulum.vel/25]
+    state = [(pendulum.ang%(2*PI))/(2*PI),pendulum.angVel,pendulum.pos[0]/width,pendulum.vel/25]
     output = actor.traverse(state)[0]
     immReward = evaluate()
 
     opt = [-0.5,0,0.5]
 
-    expl = max(0,(1000-episodes)/1111)
+    expl = 0
 
     # print(output)
     j = np.random.random()
@@ -276,91 +279,75 @@ def goOn():
         newInd = np.random.randint(0,3)
         ind = newInd
 
-    cache.append([state,ind,immReward,output])
+    cache.append([state,ind,immReward])
 
     f = opt[ind]
 
-def fit(first):
-    global cache
-    global moment_grad_w_critic
-    global moment_grad_b_critic
-    global moment_grad_w_actor
-    global moment_grad_b_actor
+def clip_grads(gw, gb, max_norm=1.0):
+    norm = np.sqrt(sum(np.sum(g**2) for g in gw + gb))
+    s = min(1.0, max_norm / (norm + 1e-8))
+    return [g * s for g in gw], [g * s for g in gb]
 
-    accum_grad_w_critic = 0
-    accum_grad_b_critic = 0
-    accum_grad_w_actor = 0
-    accum_grad_b_actor = 0
+# initialise once, outside fit(), so you don't need the `first` flag
+mw_c = [np.zeros_like(w) for w in critic.weights]
+mb_c = [np.zeros_like(b) for b in critic.biases]
+mw_a = [np.zeros_like(w) for w in actor.weights]
+mb_a = [np.zeros_like(b) for b in actor.biases]
 
-        
+def fit():
+    n = len(cache) - 1
+    aw_c = [np.zeros_like(w) for w in critic.weights]
+    ab_c = [np.zeros_like(b) for b in critic.biases]
+    aw_a = [np.zeros_like(w) for w in actor.weights]
+    ab_a = [np.zeros_like(b) for b in actor.biases]
+    avgR = 0
+    avgH = 0
 
-    for q in range(len(cache) - 1):
-        t_iter = cache[q]
-        t_1iter = cache[q+1]
+    for q in range(n):
+        st, a = cache[q][0], cache[q][1]
+        st_1, r = cache[q + 1][0], cache[q + 1][2]
+        avgR += r
 
-        st = t_iter[0]
-        selt = t_iter[1]
-        opt = t_iter[3]
+        v_next = critic.traverse(st_1)[0][0]      # constant target
+        target = r + discount_factor * v_next      # use just r if st_1 is terminal
+        v = critic.traverse(st)[0][0]              # last traverse = st, so backprop is correct
+        advantage = target - v
 
-        st_1 = t_1iter[0]
-        rt_1 = t_1iter[2]
+        critic.errorFunction([[v]], [[target]])
+        gw, gb = critic.backPropogate()
+        for i in range(len(aw_c)):
+            aw_c[i] += gw[i]; ab_c[i] += gb[i]
 
+        p = actor.traverse(st)[0]
+        logp = np.log(p + 1e-8)
+        H = -np.sum(p * logp)
+        avgH += H
 
-        curValue = critic.traverse(st_1)[0][0]
-        actualValue = rt_1 + discount_factor*curValue
+        delta = advantage * p                  # A * p
+        delta[a] -= advantage                  # A * (p - onehot)
+        delta += 0.001 * p * (logp + H)         # entropy bonus
+        gw, gb = actor.backPropogate(delta.reshape(1, -1))
+        for i in range(len(aw_a)):
+            aw_a[i] += gw[i]; ab_a[i] += gb[i]
 
-        stateValue = critic.traverse(st)[0][0]
+    print(avgR/n,"  -> Reward")
+    print(avgH/n,"  -> Entropy")
 
-        advantage = actualValue - stateValue
+    # average over the episode, clip, then momentum
+    aw_c, ab_c = clip_grads([g / n for g in aw_c], [g / n for g in ab_c])
+    aw_a, ab_a = clip_grads([g / n for g in aw_a], [g / n for g in ab_a])
 
-        print(advantage)
+    for i in range(len(critic.weights)):
+        mw_c[i] = 0.9 * mw_c[i] + aw_c[i]
+        mb_c[i] = 0.9 * mb_c[i] + ab_c[i]
+        critic.weights[i] -= learning_rate * mw_c[i]
+        critic.biases[i]  -= learning_rate * mb_c[i]
 
-        critic.errorFunction([[stateValue]],[[actualValue]])
-        grad_w_critic, grad_b_critic = critic.backPropogate()
-        if q == 0:
-            accum_grad_w_critic = grad_w_critic
-            accum_grad_b_critic = grad_b_critic
-        else:
-            for jind in range(len(accum_grad_w_critic)):
-                accum_grad_w_critic[jind] = grad_w_critic[jind] + accum_grad_w_critic[jind]
-                accum_grad_b_critic[jind] = grad_b_critic[jind] + accum_grad_b_critic[jind]
-
-        otpt = actor.traverse(st)[0]
-        j = selt
-        lossFunc = [0,0,0]
-        lossFunc[j] = 1
-        lossFunc = np.array([lossFunc])
-        lossFunc = (opt - lossFunc)*advantage
-
-        grad_w_actor, grad_b_actor = actor.backPropogate(lossFunc)
-        if q == 0:
-            accum_grad_w_actor = grad_w_actor
-            accum_grad_b_actor = grad_b_actor
-        else:
-            for jind in range(len(accum_grad_w_actor)):
-                accum_grad_w_actor[jind] = grad_w_actor[jind] + accum_grad_w_actor[jind]
-                accum_grad_b_actor[jind] = grad_b_actor[jind] + accum_grad_b_actor[jind]
-
-    if first:
-        moment_grad_w_critic = accum_grad_w_critic
-        moment_grad_b_critic = accum_grad_b_critic
-        moment_grad_w_actor = accum_grad_w_actor
-        moment_grad_b_actor = accum_grad_b_actor
-
-    else:
-        for k in range(len(moment_grad_b_actor)):
-            moment_grad_w_critic[k] = 0.1*accum_grad_w_critic[k] + moment_grad_w_critic[k] * 0.9
-            moment_grad_b_critic[k] = 0.1*accum_grad_b_critic[k] + moment_grad_b_critic[k] * 0.9
-            moment_grad_w_actor[k] = 0.1*accum_grad_w_actor[k] + moment_grad_w_actor[k] * 0.9
-            moment_grad_b_actor[k] = 0.1*accum_grad_b_actor[k] + moment_grad_b_actor[k] * 0.9
-        
-    for i in range(len(accum_grad_w_critic)):
-        critic.weights[i] -= moment_grad_w_critic[i]*learning_rate
-        critic.biases[i] -= moment_grad_b_critic[i]*learning_rate
-
-    for i in range(len(grad_w_actor)):
-        actor.weights[i] -= moment_grad_w_actor[i]*(learning_rate)
-        actor.biases[i] -= moment_grad_b_actor[i]*(learning_rate)
+    for i in range(len(actor.weights)):
+        mw_a[i] = 0.9 * mw_a[i] + aw_a[i]
+        mb_a[i] = 0.9 * mb_a[i] + ab_a[i]
+        actor.weights[i] -= 0.001 * mw_a[i]
+        actor.biases[i]  -= 0.001 * mb_a[i]
 
 # def train():
 
