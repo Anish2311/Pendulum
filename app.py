@@ -1,14 +1,7 @@
+import json
 import numpy as np
 from p5 import *
-import pandas as pd
-
-
-# Download latest version
-
-
-#-----------------------------------
-#          VISUALISATION
-#-----------------------------------
+from datetime import datetime
 
 class Pendulum:
     def __init__(self,x,y,l,a):
@@ -19,7 +12,7 @@ class Pendulum:
         self.angVel = 0
         self.angAcc = 0
         self.l = l
-        self.m = 100
+        self.m = 200
     
     def show(self):
         x2 = self.pos[0] + self.l * cos(self.ang)
@@ -37,14 +30,14 @@ class Pendulum:
         circle(self.pos[0],self.pos[1],5)
     
     def update(self):
-        self.acc = f + (self.l/10)*self.angVel*self.angVel*(abs(cos(self.ang))/cos(self.ang))*abs(cos(self.ang))
+        self.acc = f + (self.l / 10) * self.angVel**2 * cos(self.ang)
         self.vel += self.acc
-        self.vel = min(25,self.vel)
+        self.vel = max(-25,min(25,self.vel))
         self.pos[0] += self.vel
         self.angAcc = g*cos(self.ang) + (f/self.m)*sin(self.ang)
         self.angVel += self.angAcc
         self.angVel += damp*self.angVel
-        self.angVel = min(2,self.angVel)
+        self.angVel = max(-1,min(1,self.angVel))
         self.ang += self.angVel
 
 
@@ -67,6 +60,8 @@ def draw():
     global evalu
     global started
     global fcounter 
+    global episodes
+
     background(0)
     strokeWeight(1)
     stroke(0,100,150)
@@ -78,13 +73,12 @@ def draw():
     pendulum.show()
 
     f = 0
-    if fcounter == 60 or pendulum.pos[0] < 0 or pendulum.pos[0] > width:
-        fit()
-        reset()
-        fcounter = 0
-    elif frame_count%5 == 0:
-        goOn()
-        fcounter += 1
+    # if fcounter == 180:
+    #     fcounter = 0
+    #     reset()
+    # else:
+    action()
+    fcounter += 1
 
 
     # if(keyIsDown and key == RIGHT): # type: ignore
@@ -97,23 +91,18 @@ def draw():
 
     pendulum.update()
 
+def get_state():
+    return [sin(pendulum.ang), cos(pendulum.ang),
+            pendulum.angVel * 10,
+            (pendulum.pos[0] - width/2) / (width/2),
+            pendulum.vel / 10]
+
 def reset():
-    global cache
-    global episodes
-
     cache.clear()
-
-    pendulum.ang = PI
-    pendulum.angVel = 0
-    pendulum.angAcc = 0
-
-    pendulum.pos = [width/2,height/1.75]
-    pendulum.vel = 0
-    pendulum.acc = 0
-
-    episodes += 1
-
-    print(episodes)
+    pendulum.ang = 3*HALF_PI + np.random.uniform(-0.3, 0.3)
+    pendulum.angVel = 0; pendulum.angAcc = 0
+    pendulum.pos = [width/2, height/1.75]
+    pendulum.vel = 0; pendulum.acc = 0
 
 def key_pressed():
     global keyIsDown
@@ -125,26 +114,20 @@ def key_released():
     
 
 def evaluate():
+    target = 3 * HALF_PI
 
-    w_theta = 1.0       # Upright angle penalty
-    w_theta_dot = 0.1   # Angular velocity penalty (prevents spinning)
-    w_x = 0.5          # Position penalty (keeps cart centered)
+    # Wrapped angular difference in [-pi, pi]
+    theta_err = (pendulum.ang - target + PI) % (2 * PI) - PI
 
-    ang = (pendulum.ang)%(2*PI)
-    if ang < 0:
-        ang += 2*PI
+    x_err = (pendulum.pos[0] - width / 2) / (width / 2)
+    angular_velocity = pendulum.angVel
 
-    theta_err = 3*HALF_PI - ang
-    if theta_err > PI:
-        theta_err = 2*PI - theta_err
+    reward = (
+        -1.0 * theta_err**2
+        -0.1 * (angular_velocity*10)**2
+        -1.0 * x_err**2
+    )
 
-    offset_err = abs(pendulum.pos[0] - width/2)/(width/2)
-
-    off_t = -1
-    off_w = -0.1
-
-    reward = off_t * theta_err/PI + off_w * offset_err
-    
     return reward
 
 
@@ -154,9 +137,11 @@ def evaluate():
 
 import numpy as np
 
-class Network():
-    def __init__(self, n, larr, o, opf):
+
+class Network:
+    def __init__(self, n, larr, o, opf, hidden_activation="tanh"):
         self.opFunc = opf
+        self.hidden_activation = hidden_activation
 
         self.weights = []
         self.biases = []
@@ -165,19 +150,43 @@ class Network():
         self.activationFunctionDeriv = []
         self.opForLayers = []
 
-        self.totalLayers = 1 + len(larr)
-
         layer_dims = [n] + larr + [o]
-        for i in range(len(layer_dims) - 1):
-            fan_in, fan_out = layer_dims[i], layer_dims[i+1]
-            std = np.sqrt(2.0 / (fan_in + fan_out))
-            self.weights.append(np.random.normal(0, std, (fan_in, fan_out)))
-            self.biases.append(np.zeros((1, fan_out)))
+        self.totalLayers = len(layer_dims) - 1
+
+        for i in range(self.totalLayers):
+            fan_in = layer_dims[i]
+            fan_out = layer_dims[i + 1]
+
+            is_output = (i == self.totalLayers - 1)
+
+            if is_output and self.opFunc:
+                # Small initial logits -> near-uniform policy
+                std = 0.01
+            elif hidden_activation == "relu":
+                std = np.sqrt(2.0 / fan_in)
+            else:
+                # Xavier normal: sigmoid/tanh
+                std = np.sqrt(2.0 / (fan_in + fan_out))
+
+            W = np.random.randn(fan_in, fan_out) * std
+            b = np.zeros((1, fan_out))
+
+            self.weights.append(W)
+            self.biases.append(b)
 
     def activationFunction(self, a):
-        sgnm = 1 / (1 + np.exp(-np.clip(a, -500, 500)))
-        self.activationFunctionDeriv.append(sgnm * (1 - sgnm))
-        return sgnm
+        if self.hidden_activation == "tanh":
+            out = np.tanh(a)
+            deriv = 1.0 - out**2
+        elif self.hidden_activation == "relu":
+            out = np.maximum(0.0, a)
+            deriv = (a > 0).astype(np.float64)
+        else:
+            out = 1.0 / (1.0 + np.exp(-np.clip(a, -500, 500)))
+            deriv = out * (1.0 - out)
+
+        self.activationFunctionDeriv.append(deriv)
+        return out
 
     def outputFunction(self, a):
         exps = np.exp(a - np.max(a, axis=-1, keepdims=True))
@@ -237,12 +246,11 @@ class Network():
         return gradient_w[::-1], gradient_b[::-1]
 
 
+actor = Network(5, [32,32,32], 3, 1, hidden_activation="tanh")
+critic = Network(5, [32,32,32], 1, 0, hidden_activation="tanh")
 
-actor = Network(4,[32,32],3,1)
-critic = Network(4,[32,32],1,0)
-
-discount_factor = 0.98
-learning_rate = 0.01
+discount_factor = 0.995
+learning_rate_actor, learning_rate_critic = 0.01, 0.1
 cache = []
 episodes = 0
 
@@ -251,18 +259,28 @@ moment_grad_b_critic = 0
 moment_grad_w_actor = 0
 moment_grad_b_actor = 0
 
-def goOn():
+def action():
     global f
-    global cache
-    global episodes
 
-    state = [(pendulum.ang%(2*PI))/(2*PI),pendulum.angVel,pendulum.pos[0]/width,pendulum.vel/25]
+    state = get_state()
+    output = actor.traverse(state)[0]
+
+    opt = [-0.6,0,0.6]
+
+    # print(output)
+    j = np.where(output == np.max(output))[0][0]
+
+
+
+    f = opt[j]
+
+def goOn():
+    global cache
+    global f
+
+    state = get_state()
     output = actor.traverse(state)[0]
     immReward = evaluate()
-
-    opt = [-0.5,0,0.5]
-
-    expl = 0
 
     # print(output)
     j = np.random.random()
@@ -274,14 +292,10 @@ def goOn():
             ind = k
             break
 
-    j = np.random.random()
-    if j < expl:
-        newInd = np.random.randint(0,3)
-        ind = newInd
+    opt = [-0.6,0,0.6]
+    f = opt[ind]
 
     cache.append([state,ind,immReward])
-
-    f = opt[ind]
 
 def clip_grads(gw, gb, max_norm=1.0):
     norm = np.sqrt(sum(np.sum(g**2) for g in gw + gb))
@@ -294,24 +308,27 @@ mb_c = [np.zeros_like(b) for b in critic.biases]
 mw_a = [np.zeros_like(w) for w in actor.weights]
 mb_a = [np.zeros_like(b) for b in actor.biases]
 
-def fit():
-    n = len(cache) - 1
+def fit(num_episode):
+    global episodes
+    n = len(cache) - 2
     aw_c = [np.zeros_like(w) for w in critic.weights]
     ab_c = [np.zeros_like(b) for b in critic.biases]
     aw_a = [np.zeros_like(w) for w in actor.weights]
     ab_a = [np.zeros_like(b) for b in actor.biases]
     avgR = 0
     avgH = 0
+    beta = 0.001 - (0.001*(episodes/num_episode))
 
     for q in range(n):
         st, a = cache[q][0], cache[q][1]
         st_1, r = cache[q + 1][0], cache[q + 1][2]
         avgR += r
 
-        v_next = critic.traverse(st_1)[0][0]      # constant target
-        target = r + discount_factor * v_next      # use just r if st_1 is terminal
-        v = critic.traverse(st)[0][0]              # last traverse = st, so backprop is correct
-        advantage = target - v
+        v_next = critic.traverse(st_1)[0][0]       
+        target = r + discount_factor * v_next      
+        
+        v = critic.traverse(st)[0][0]              
+        advantage = (target - v)
 
         critic.errorFunction([[v]], [[target]])
         gw, gb = critic.backPropogate()
@@ -319,43 +336,74 @@ def fit():
             aw_c[i] += gw[i]; ab_c[i] += gb[i]
 
         p = actor.traverse(st)[0]
+        # print(
+        #     f"A={advantage:.5f}, "
+        #     f"V={float(v):.5f}, "
+        #     f"target={float(target):.5f}"
+        # )
         logp = np.log(p + 1e-8)
         H = -np.sum(p * logp)
+        H = H
         avgH += H
 
         delta = advantage * p                  # A * p
         delta[a] -= advantage                  # A * (p - onehot)
-        delta += 0.001 * p * (logp + H)         # entropy bonus
+        delta += beta * p * (logp + H)         # entropy bonus
         gw, gb = actor.backPropogate(delta.reshape(1, -1))
         for i in range(len(aw_a)):
             aw_a[i] += gw[i]; ab_a[i] += gb[i]
 
-    print(avgR/n,"  -> Reward")
-    print(avgH/n,"  -> Entropy")
+    # print(avgR/n,"  -> Reward")
+    # print(avgH/n,"  -> Entropy")
 
-    # average over the episode, clip, then momentum
+    #average over the episode, clip, then momentum
     aw_c, ab_c = clip_grads([g / n for g in aw_c], [g / n for g in ab_c])
     aw_a, ab_a = clip_grads([g / n for g in aw_a], [g / n for g in ab_a])
 
+    # aw_c = [a/n for a in aw_c]
+    # ab_c = [a/n for a in ab_c]
+    # aw_a = [a/n for a in aw_a]
+    # ab_a = [a/n for a in ab_a]
+
     for i in range(len(critic.weights)):
-        mw_c[i] = 0.9 * mw_c[i] + aw_c[i]
-        mb_c[i] = 0.9 * mb_c[i] + ab_c[i]
-        critic.weights[i] -= learning_rate * mw_c[i]
-        critic.biases[i]  -= learning_rate * mb_c[i]
+        # mw_c[i] = 0.9 * mw_c[i] + aw_c[i]
+        # mb_c[i] = 0.9 * mb_c[i] + ab_c[i]
+        critic.weights[i] -= learning_rate_critic * aw_c[i]
+        critic.biases[i]  -= learning_rate_critic * ab_c[i]
 
     for i in range(len(actor.weights)):
-        mw_a[i] = 0.9 * mw_a[i] + aw_a[i]
-        mb_a[i] = 0.9 * mb_a[i] + ab_a[i]
-        actor.weights[i] -= 0.001 * mw_a[i]
-        actor.biases[i]  -= 0.001 * mb_a[i]
+        # aw_a[i] = 0.9 * aw_a[i] + aw_a[i]
+        # ab_a[i] = 0.9 * ab_a[i] + ab_a[i]
+        actor.weights[i] -= learning_rate_actor * aw_a[i]
+        actor.biases[i]  -= learning_rate_actor * ab_a[i]
 
-# def train():
+    return (avgR/n,avgH/n)
 
-#     steps = 500
+def train(num_episode, num_frames):
+    global episodes
+    for ep in range(num_episode):
+        reset()
+        for _ in range(num_frames):
+            goOn()
+            pendulum.update()
+        episodes += 1
+        res = fit(num_episode)
+        if ep%100 == 0:
+            print(res)
 
-#     for k in range(steps):
-
-
+def ser(wts) :
+    return [w.tolist() for w in wts]
 
 if __name__ == '__main__':
-  run()
+    now = datetime.now().strftime("%d-%m-%Y-%H-%M-%S")
+    train(2000, 180)
+
+    with open(f"pendulum-{now}.json", "w") as f :
+        json.dump({
+            "actor_w" : ser(actor.weights),
+            "actor_b" : ser(actor.biases),
+            "critic_w" : ser(critic.weights),
+            "critic_b" : ser(critic.biases),
+        }, f)
+    reset()
+    run()
