@@ -51,6 +51,7 @@ pendulum = Pendulum(width/2,height/1.75,200,HALF_PI)
 keyIsDown = False
 started = False
 fcounter = 0
+mouseVel = [0,0]
 
 def setup():
     size(width,height)
@@ -111,6 +112,21 @@ def key_pressed():
 def key_released():
     global keyIsDown
     keyIsDown = False
+
+def mouse_dragged():
+    global mouseVel
+    x2 = pendulum.pos[0] + pendulum.l * cos(pendulum.ang)
+    y2 = pendulum.pos[1] + pendulum.l * sin(pendulum.ang)
+    r = pendulum.l/4
+    mouseVel.append(mouse_x)
+    del mouseVel[0]
+    force_mag = (mouseVel[1] - mouseVel[0])/3000
+    if abs(mouse_x - x2) <= r and abs(mouse_y - y2) <= r:
+        pendulum.angVel += force_mag
+        print(force_mag)
+    no_stroke()
+    fill(100,0,0)
+    circle(mouse_x,mouse_y,10)
     
 
 def evaluate():
@@ -124,7 +140,7 @@ def evaluate():
 
     reward = (
         -1.0 * theta_err**2
-        -0.1 * (angular_velocity*10)**2
+        -0.5 * (angular_velocity*10)**2
         -1.0 * x_err**2
     )
 
@@ -246,18 +262,13 @@ class Network:
         return gradient_w[::-1], gradient_b[::-1]
 
 
-actor = Network(5, [32,32,32], 3, 1, hidden_activation="tanh")
-critic = Network(5, [32,32,32], 1, 0, hidden_activation="tanh")
+actor = Network(5, [16,16], 3, 1, hidden_activation="tanh")
+critic = Network(5, [16,16], 1, 0, hidden_activation="tanh")
 
-discount_factor = 0.995
-learning_rate_actor, learning_rate_critic = 0.01, 0.1
+discount_factor = 0.999
+learning_rate_actor, learning_rate_critic = 0.005, 0.05
 cache = []
 episodes = 0
-
-moment_grad_w_critic = 0
-moment_grad_b_critic = 0
-moment_grad_w_actor = 0
-moment_grad_b_actor = 0
 
 def action():
     global f
@@ -317,7 +328,7 @@ def fit(num_episode):
     ab_a = [np.zeros_like(b) for b in actor.biases]
     avgR = 0
     avgH = 0
-    beta = 0.001 - (0.001*(episodes/num_episode))
+    beta = 0.1 - (0.1*(episodes/num_episode))
 
     for q in range(n):
         st, a = cache[q][0], cache[q][1]
@@ -394,16 +405,31 @@ def train(num_episode, num_frames):
 def ser(wts) :
     return [w.tolist() for w in wts]
 
-if __name__ == '__main__':
-    now = datetime.now().strftime("%d-%m-%Y-%H-%M-%S")
-    train(2000, 180)
+def deser(wts):
+    return [np.array(w) for w in wts]
 
-    with open(f"pendulum-{now}.json", "w") as f :
-        json.dump({
-            "actor_w" : ser(actor.weights),
-            "actor_b" : ser(actor.biases),
-            "critic_w" : ser(critic.weights),
-            "critic_b" : ser(critic.biases),
-        }, f)
+if __name__ == '__main__':
+    load = True
+    training = False
+    # training = True
+    if load:
+        with open("./Training_parameters/pendulum-20-10-2026-14-15-02.json","r") as f:
+            a = json.load(f)
+            actor.weights = deser(a["actor_w"])
+            actor.biases = deser(a["actor_b"])
+            critic.weights = deser(a["critic_w"])
+            critic.biases = deser(a["critic_b"])
+    if training:
+        now = datetime.now().strftime("%d-%m-%Y-%H-%M-%S")
+        train(50000, 300)
+
+        with open(f"pendulum-{now}.json", "w") as f :
+            json.dump({
+                "actor_w" : ser(actor.weights),
+                "actor_b" : ser(actor.biases),
+                "critic_w" : ser(critic.weights),
+                "critic_b" : ser(critic.biases),
+            }, f)
+
     reset()
     run()
